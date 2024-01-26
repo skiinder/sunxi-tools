@@ -428,6 +428,12 @@ void aw_fel_spiflash_read(feldev_handle *dev,
  */
 
 #define CMD_WRITE_ENABLE 0x06
+#define SPI_FLASH_16MB_BOUN  0x1000000
+# define CMD_BANKADDR_BRWR              0x17	//only SPANSION flash use it
+# define CMD_BANKADDR_BRRD              0x16
+# define CMD_EXTNADDR_WREAR             0xC5
+# define CMD_EXTNADDR_RDEAR             0xC8
+size_t bank_curr = 0;
 
 void aw_fel_spiflash_write_helper(feldev_handle *dev,
 				  uint32_t offset, void *buf, size_t len,
@@ -437,7 +443,7 @@ void aw_fel_spiflash_write_helper(feldev_handle *dev,
 	soc_info_t *soc_info = dev->soc_info;
 	uint8_t *buf8 = (uint8_t *)buf;
 	size_t max_chunk_size = soc_info->scratch_addr - soc_info->spl_addr;
-	size_t cmd_idx;
+	size_t cmd_idx, bank_sel;
 
 	if (max_chunk_size > 0x1000)
 		max_chunk_size = 0x1000;
@@ -446,6 +452,29 @@ void aw_fel_spiflash_write_helper(feldev_handle *dev,
 
 	prepare_spi_batch_data_transfer(dev, soc_info->spl_addr);
 
+	bank_sel = offset /SPI_FLASH_16MB_BOUN;
+	if (bank_sel != bank_curr)
+	{
+		/* Emit write enable command */
+		cmdbuf[cmd_idx++] = 0;
+		cmdbuf[cmd_idx++] = 1;
+		cmdbuf[cmd_idx++] = CMD_WRITE_ENABLE;
+		/* Emit write bank */
+		cmdbuf[cmd_idx++] = 0;
+		cmdbuf[cmd_idx++] = 2;
+		cmdbuf[cmd_idx++] = CMD_EXTNADDR_WREAR;
+		cmdbuf[cmd_idx++] = offset >> 24;
+		/* Emit wait for completion */
+		cmdbuf[cmd_idx++] = 0xFF;
+		cmdbuf[cmd_idx++] = 0xFF;
+		/* Emit the end marker */
+		cmdbuf[cmd_idx++] = 0;
+		cmdbuf[cmd_idx++] = 0;
+		aw_fel_write(dev, cmdbuf, dev->soc_info->spl_addr, cmd_idx);
+		aw_fel_remotefunc_execute(dev, NULL);
+		bank_curr = bank_sel;
+	}
+	cmd_idx = 0;
 	while (len > 0) {
 		while (len > 0 && max_chunk_size - cmd_idx > program_size + 64) {
 			if (offset % erase_size == 0) {
